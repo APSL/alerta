@@ -885,8 +885,8 @@ def build_slack_response(alert, action, user, data):
     )
 
     attachment_response = {
-        "fallback": message, "pretext": "Action done!", "color": "#808080",
-        "title": message, "title_link": absolute_url('/alert/' + alert.id)
+        "fallback": message, "color": "#808080", "title": message,
+        "title_link": absolute_url('/alert/' + alert.id)
     }
 
     # clear interactive buttons and add new attachment as response of action
