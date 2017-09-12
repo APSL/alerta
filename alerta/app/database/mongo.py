@@ -733,6 +733,10 @@ class Database(object):
             }
         }
 
+        # reset repeat and duplicateCount values
+        if status == status_code.CLOSED:
+            update['$set'].update({"repeat": False, "duplicateCount": 0})
+
         response = self.db.alerts.find_one_and_update(
             query,
             update=update,
