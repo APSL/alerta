@@ -875,39 +875,28 @@ def parse_slack(data):
 
 def build_slack_response(alert, action, user, data):
     response = json.loads(data['payload']).get('original_message', {})
+    actions = ['open', 'ack', 'close']
 
-    actions = ['watch', 'unwatch']
     message = (
-        u"User {user} is {action}ing alert {alert}" if action in actions else
-        u"The status of alert {alert} is {status} now!").format(
+        u"The status of alert {alert} is {status} now!" if action in actions else
+        u"User {user} is watching alert {alert}").format(
         alert=alert.get_id(short=True), status=alert.status.capitalize(),
         action=action, user=user
     )
 
     attachment_response = {
         "fallback": message, "color": "#808080", "title": message,
-        "title_link": absolute_url('/alert/' + alert.id)
+        "title_link": absolute_url("{}/alert/{}".format(app.config.get('DASHBOARD_URL'), alert.id))
     }
 
     # clear interactive buttons and add new attachment as response of action
-    if action not in actions:
-        attachments = response.get('attachments', [])
+    attachments = response.get('attachments', [])
+    if action in actions:
         for attachment in attachments:
             attachment.pop('actions', None)
-        attachments.append(attachment_response)
-        response['attachments'] = attachments
-        return response
 
-    # update the interactive button of all actions
-    next_action = actions[(actions.index(action) + 1) % len(actions)]
-    for attachment in response.get('attachments', []):
-        for attached_action in attachment.get('actions', []):
-            if action == attached_action.get('value'):
-                attached_action.update({
-                    'name': next_action, 'value': next_action,
-                    'text': next_action.capitalize()
-                })
-
+    attachments.append(attachment_response)
+    response['attachments'] = attachments
     return response
 
 
@@ -935,8 +924,8 @@ def slack():
             webhook_timer.stop_timer(hook_started)
             return jsonify(status="error", message=str(e)), 500
 
-    elif action in ['watch', 'unwatch']:
-        db.untag_alert(alert.id, ["{}:{}".format(action, user), ])
+    elif action == 'watch':
+        db.tag_alert(alert.id, ["{}:{}".format(action, user), ])
 
     else:
         webhook_timer.stop_timer(hook_started)
