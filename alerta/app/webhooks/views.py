@@ -11,6 +11,7 @@ from copy import copy
 from dateutil.parser import parse as parse_date
 from flask import g, request, jsonify
 from flask_cors import cross_origin
+from flask.config import Config
 
 from alerta.app import app, db
 from alerta.app.auth import permission
@@ -727,31 +728,42 @@ def grafana():
         return jsonify(status="ok", ids=[alert.id for alert in alerts]), 201
 
 
-def send_message_replay(alert_id, action, user, data):
+def send_message_reply(alert_id, action, user, data):
     try:
         import telepot
     except ImportError as e:
         LOG.warning("You have configured Telegram but 'telepot' client is not installed", exec_info=True)
         return
 
+    # process buttons for reply text
+    alert = db.get_alert(alert_id)
+    inline_keyboard, reply = [], "The status of alert {alert} is *{status}* now!"
+
     try:
-        bot = telepot.Bot(app.config.get('TELEGRAM_TOKEN'))
+        config = Config('/')
+        customer = "_{}".format(alert.customer) if alert.customer else ""
+        config.from_pyfile("/etc/alertad{}.conf".format(customer), silent=True)
+        config.from_envvar("ALERTA_SVR_CONF{}_FILE".format(customer.upper()), silent=True)
+
+        token = config.get('TELEGRAM_TOKEN')
+        chat_id = config.get('TELEGRAM_CHAT_ID')
         dashboard_url = app.config.get('DASHBOARD_URL')
 
+        if not (token and dashboard_url and chat_id):
+            raise ValueError
+    except Exception as e:
+        LOG.error("Error getting configuration by customer '{}'.\nWon't send telegram reply.".format(alert.customer))
+        return
+
+    try:
         # message info
         message_id = data['callback_query']['message']['message_id']
         message_log = "\n".join(data['callback_query']['message']['text'].split('\n')[1:])
 
-        # process buttons for reply text
-        alert = db.get_alert(alert_id)
-        inline_keyboard, reply = [], "The status of alert {alert} is *{status}* now!"
-
-        actions = ['watch', 'unwatch']
-        if action in actions:
-            reply = "User `{user}` is _{status}ing_ alert {alert}"
-            next_action = actions[(actions.index(action) + 1) % len(actions)]
+        if action == 'watch':
+            reply = "User {user} is watching alert {alert}"
             inline_keyboard = [
-                [{'text': next_action.capitalize(), 'callback_data': "/{} {}".format(next_action, alert_id)},
+                [{'text': 'Watch', 'callback_data': "{} {}".format('/watch', alert_id)},
                  {'text': 'Ack', 'callback_data': "{} {}".format('/ack', alert_id)},
                  {'text': 'Close', 'callback_data': "{} {}".format('/close', alert_id)}, ]
             ]
@@ -760,17 +772,16 @@ def send_message_replay(alert_id, action, user, data):
         alert_short_id = alert.get_id(short=True)
         alert_url = "{}/#/alert/{}".format(dashboard_url, alert.id)
         reply = reply.format(alert=alert_short_id, status=action, user=user)
-        message = "{alert} *{level} - {event} on {resouce}*\n{log}\n{reply}".format(
-            alert="[{}]({})".format(alert_short_id, alert_url), level=alert.severity.capitalize(),
+        message = "{alert} `{level}` - *{event} on {resouce}*\n{log}\n{reply}".format(
+            alert="[{}]({})".format(alert_short_id, alert_url), level=alert.severity.upper(),
             event=alert.event, resouce=alert.resource, log=message_log, reply=reply)
 
         # send message
-        bot.editMessageText(
-            msg_identifier=(app.config.get('TELEGRAM_CHAT_ID'), message_id), text=message,
-            parse_mode='Markdown', reply_markup={'inline_keyboard': inline_keyboard}
-        )
+        bot = telepot.Bot(token)
+        bot.editMessageText(msg_identifier=(chat_id, message_id), text=message, parse_mode='Markdown',
+                            reply_markup={'inline_keyboard': inline_keyboard})
     except Exception as e:
-        LOG.warning("Error sending reply message", exec_info=True)
+        LOG.warning("Error sending reply message", exc_info=True)
 
 
 @app.route('/webhooks/telegram', methods=['OPTIONS', 'POST'])
@@ -781,18 +792,22 @@ def telegram():
     if 'callback_query' in data:
         author = data['callback_query']['from']
         command, alert = data['callback_query']['data'].split(' ', 1)
-        user = "{} {}".format(author.get('first_name'), author.get('last_name'))
+        user = author.get('username')
+        if not user:
+            user = u"{} {}".format(author.get('first_name'), author.get('last_name') or '').strip(' ')
 
         action = command.lstrip('/')
         if action in ['open', 'ack', 'close']:
             db.set_status(alert, action, 'status change via Telegram')
-        elif action in ['watch', 'unwatch']:
-            db.untag_alert(alert, ["{}:{}".format(action, user), ])
+        elif action == 'watch':
+            db.tag_alert(alert, [u"{}:{}".format(action, user), ])
+            if db.get_users({'name': user}):
+                LOG.error("Not found user '{}'".format(user))
         elif action == 'blackout':
             environment, resource, event = alert.split('|', 2)
             db.create_blackout(environment, resource=resource, event=event)
 
-        send_message_replay(alert, action, user, data)
+        send_message_reply(alert, action, user, data)
         return jsonify(status="ok")
     else:
         return jsonify(status="error", message="no callback_query in Telegram message"), 400
