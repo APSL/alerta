@@ -7,3 +7,5 @@ python-dateutil
 pytz
 PyJWT
 bcrypt
+raven==6.2.1
+raven[flask]

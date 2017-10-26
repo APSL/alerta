@@ -78,6 +78,7 @@ if 'SMTP_PASSWORD' in os.environ:
 if 'PLUGINS' in os.environ:
     app.config['PLUGINS'] = os.environ['PLUGINS'].split(',')
 
+
 # Setup logging
 from logging import getLogger
 loggers = [app.logger, getLogger('werkzeug'), getLogger('requests'), getLogger('flask_cors')]
@@ -94,6 +95,19 @@ if app.config['LOG_FILE']:
     logfile_handler.setFormatter(logging.Formatter(LOG_FORMAT))
     for logger in loggers:
         logger.addHandler(logfile_handler)
+
+if 'SENTRY_ENABLED' in os.environ:
+    app.config['SENTRY_ENABLED'] = os.environ['SENTRY_ENABLED']
+
+if 'SENTRY_DSN' in os.environ:
+    app.config['SENTRY_DSN'] = os.environ['SENTRY_DSN']
+
+if app.config.get('SENTRY_ENABLED', False):
+    try:
+        from raven.contrib.flask import Sentry
+        sentry = Sentry(app, dsn=app.config['SENTRY_DSN'])
+    except Exception as e:
+        raise RuntimeError("Can't initialize sentry logger")
 
 # Runtime config check
 if app.config['CUSTOMER_VIEWS'] and not app.config['AUTH_REQUIRED']:
