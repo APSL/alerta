@@ -2,6 +2,7 @@
 import datetime
 import pytz
 
+
 try:
     import simplejson as json
 except ImportError:
@@ -11,7 +12,6 @@ from copy import copy
 from dateutil.parser import parse as parse_date
 from flask import g, request, jsonify
 from flask_cors import cross_origin
-from flask.config import Config
 
 from alerta.app import app, db
 from alerta.app.auth import permission
@@ -19,6 +19,7 @@ from alerta.app.metrics import Timer
 from alerta.app.utils import absolute_url, process_alert, add_remote_ip
 from alerta.app.alert import Alert
 from alerta.app.exceptions import RejectException
+from alerta.app.webhooks.parsers import TelegramParser, SlackParser
 
 LOG = app.logger
 
@@ -728,86 +729,25 @@ def grafana():
         return jsonify(status="ok", ids=[alert.id for alert in alerts]), 201
 
 
-def send_message_reply(alert_id, action, user, data):
-    try:
-        import telepot
-    except ImportError as e:
-        LOG.warning("You have configured Telegram but 'telepot' client is not installed", exec_info=True)
-        return
-
-    # process buttons for reply text
-    alert = db.get_alert(alert_id)
-    inline_keyboard, reply = [], "The status of alert {alert} is *{status}* now!"
-
-    try:
-        config = Config('/')
-        customer = "_{}".format(alert.customer) if alert.customer else ""
-        config.from_pyfile("/etc/alertad{}.conf".format(customer), silent=True)
-        config.from_envvar("ALERTA_SVR_CONF{}_FILE".format(customer.upper()), silent=True)
-
-        token = config.get('TELEGRAM_TOKEN')
-        chat_id = config.get('TELEGRAM_CHAT_ID')
-        dashboard_url = app.config.get('DASHBOARD_URL')
-
-        if not (token and dashboard_url and chat_id):
-            raise ValueError
-    except Exception as e:
-        LOG.error("Error getting configuration by customer '{}'.\nWon't send telegram reply.".format(alert.customer))
-        return
-
-    try:
-        # message info
-        message_id = data['callback_query']['message']['message_id']
-        message_log = "\n".join(data['callback_query']['message']['text'].split('\n')[1:])
-
-        if action == 'watch':
-            reply = "User {user} is watching alert {alert}"
-            inline_keyboard = [
-                [{'text': 'Watch', 'callback_data': "{} {}".format('/watch', alert_id)},
-                 {'text': 'Ack', 'callback_data': "{} {}".format('/ack', alert_id)},
-                 {'text': 'Close', 'callback_data': "{} {}".format('/close', alert_id)}, ]
-            ]
-
-        # format message response
-        alert_short_id = alert.get_id(short=True)
-        alert_url = "{}/#/alert/{}".format(dashboard_url, alert.id)
-        reply = reply.format(alert=alert_short_id, status=action, user=user)
-        message = "{alert} `{level}` - *{event} on {resouce}*\n{log}\n{reply}".format(
-            alert="[{}]({})".format(alert_short_id, alert_url), level=alert.severity.upper(),
-            event=alert.event, resouce=alert.resource, log=message_log, reply=reply)
-
-        # send message
-        bot = telepot.Bot(token)
-        bot.editMessageText(msg_identifier=(chat_id, message_id), text=message, parse_mode='Markdown',
-                            reply_markup={'inline_keyboard': inline_keyboard})
-    except Exception as e:
-        LOG.warning("Error sending reply message", exc_info=True)
-
-
 @app.route('/webhooks/telegram', methods=['OPTIONS', 'POST'])
 @cross_origin()
 @permission('write:webhooks')
 def telegram():
     data = request.json
-    if 'callback_query' in data:
-        author = data['callback_query']['from']
-        command, alert = data['callback_query']['data'].split(' ', 1)
-        user = author.get('username')
-        if not user:
-            user = u"{} {}".format(author.get('first_name'), author.get('last_name') or '').strip(' ')
-
-        action = command.lstrip('/')
+    parser = TelegramParser(logger=LOG)
+    if parser.valid_data(data):
+        alert, user, action = parser.parser_telegram(data)
         if action in ['open', 'ack', 'close']:
             db.set_status(alert, action, 'status change via Telegram')
         elif action == 'watch':
             db.tag_alert(alert, [u"{}:{}".format(action, user), ])
             if db.get_users({'name': user}):
-                LOG.error("Not found user '{}'".format(user))
+                LOG.info("Not found user {} for {} on {}".format(user, action, alert))
         elif action == 'blackout':
             environment, resource, event = alert.split('|', 2)
             db.create_blackout(environment, resource=resource, event=event)
 
-        send_message_reply(alert, action, user, data)
+        parser.send_message_reply(alert, action, user, data)
         return jsonify(status="ok")
     else:
         return jsonify(status="error", message="no callback_query in Telegram message"), 400
@@ -866,62 +806,14 @@ def riemann():
         return jsonify(status="error", message="insert or update of Riemann alert failed"), 500
 
 
-def parse_slack(data):
-    payload = json.loads(data['payload'])
-
-    user = payload.get('user', {}).get('name')
-    alert_key = payload.get('callback_id')
-    action = payload.get('actions', [{}])[0].get('value')
-
-    try:
-        alert = db.get_alert(id=alert_key)
-    except Exception as e:
-        LOG.error(u'User {} is doing a non existent action {}'.format(user, action))
-
-    if not alert:
-        raise ValueError(u'Alert {} not match'.format(alert_key))
-    elif not user:
-        raise ValueError(u'User {} not exist'.format(user))
-    elif not action:
-        raise ValueError(u'Non existent action {}'.format(action))
-
-    return alert, user, action
-
-
-def build_slack_response(alert, action, user, data):
-    response = json.loads(data['payload']).get('original_message', {})
-    actions = ['open', 'ack', 'close']
-
-    message = (
-        u"The status of alert {alert} is {status} now!" if action in actions else
-        u"User {user} is watching alert {alert}").format(
-        alert=alert.get_id(short=True), status=alert.status.capitalize(),
-        action=action, user=user
-    )
-
-    attachment_response = {
-        "fallback": message, "color": "#808080", "title": message,
-        "title_link": absolute_url("{}/alert/{}".format(app.config.get('DASHBOARD_URL'), alert.id))
-    }
-
-    # clear interactive buttons and add new attachment as response of action
-    attachments = response.get('attachments', [])
-    if action in actions:
-        for attachment in attachments:
-            attachment.pop('actions', None)
-
-    attachments.append(attachment_response)
-    response['attachments'] = attachments
-    return response
-
-
 @app.route('/webhooks/slack', methods=['OPTIONS', 'POST'])
 @cross_origin()
 @permission('write:webhooks')
 def slack():
+    parser = SlackParser(logger=LOG)
     hook_started = webhook_timer.start_timer()
     try:
-        alert, user, action = parse_slack(request.form)
+        alert, user, action = parser.parse_slack(request.form)
     except ValueError as e:
         webhook_timer.stop_timer(hook_started)
         return jsonify(stats="error", message="not found"), 404
@@ -946,7 +838,7 @@ def slack():
         webhook_timer.stop_timer(hook_started)
         return jsonify(status="error", message=u'Unsuported action'), 403
 
-    response = build_slack_response(alert, action, user, request.form)
+    response = parser.build_slack_response(alert, action, user, request.form)
 
     webhook_timer.stop_timer(hook_started)
     return jsonify(**response), 201
