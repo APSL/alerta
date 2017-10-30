@@ -27,7 +27,9 @@ setuptools.setup(
         'python-dateutil',
         'pytz',
         'PyJWT',
-        'bcrypt'
+        'bcrypt',
+        'raven>=6.2.1',
+        'blinker>=1.1',
     ],
     include_package_data=True,
     zip_safe=False,
