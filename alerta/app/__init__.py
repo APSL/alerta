@@ -102,10 +102,18 @@ if 'SENTRY_ENABLED' in os.environ:
 if 'SENTRY_DSN' in os.environ:
     app.config['SENTRY_DSN'] = os.environ['SENTRY_DSN']
 
+if 'SENTRY_LOGGING' in os.environ:
+    app.config['SENTRY_DSN'] = os.environ['SENTRY_DSN']
+
+if 'SENTRY_LOGGING_LEVEL' in os.environ:
+    app.config['SENTRY_LOGGING_LEVEL'] = os.environ['SENTRY_LOGGING_LEVEL']
+
 if app.config.get('SENTRY_ENABLED', False):
     try:
         from raven.contrib.flask import Sentry
-        sentry = Sentry(app, dsn=app.config['SENTRY_DSN'])
+        sentry_log = app.config.get('SENTRY_LOGGING', True)
+        sentry_log_level = logging.getLevelName(app.config.get('SENTRY_LOGGING_LEVEL', 'WARNING'))
+        sentry = Sentry(app, dsn=app.config['SENTRY_DSN'], logging=sentry_log, level=sentry_log_level)
     except Exception as e:
         raise RuntimeError("Can't initialize sentry logger")
 
