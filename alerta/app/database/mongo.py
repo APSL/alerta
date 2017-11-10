@@ -379,6 +379,7 @@ class Database(object):
         update = {
             '$set': {
                 "status": status,
+                "service": alert.service,
                 "value": alert.value,
                 "text": alert.text,
                 "rawData": alert.raw_data,
@@ -481,6 +482,7 @@ class Database(object):
             '$set': {
                 "event": alert.event,
                 "severity": alert.severity,
+                "service": alert.service,
                 "status": status,
                 "value": alert.value,
                 "text": alert.text,

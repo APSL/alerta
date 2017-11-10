@@ -135,7 +135,10 @@ class TelegramParser(ConfigParser):
         'loading_error': u"Error getting configuration by {customer} customer.\n Telegram reply for {action} on "
                          u"{alert} won't be sent.",
         'message_format': u"{alarm} `{level}` - *{event}*\n"
-                          u"`Resource: {resource}`\n`Customer: {customer}`\n`Severity: {severity}`\n"
+                          u"`Resource: {resource}`\n"
+                          u"`Customer: {customer}`\n"
+                          u"{services_as_text}"
+                          u"`Severity: {severity}`\n"
                           u">> {text}",
         'extra_message_format': u"{log}\n{reply}",
         'reply_message': u"\u2713 Alert {alert} is *{status}* now! Action done by {user}.",
@@ -185,6 +188,9 @@ class TelegramParser(ConfigParser):
             message = message.strip(char)
         message = u"\n{}".format(message) if message else message
         return message
+
+    def _services_as_text(self, alert):
+        return u"`Services: {}`\n".format(u", ".join(alert.service)) if alert.service else u""
 
     def _reply_message(self, action, alert, user, config):
         """
@@ -258,7 +264,7 @@ class TelegramParser(ConfigParser):
             message = message_format.format(
                 alarm="[{}]({})".format(alert_short_id, alert_url), level=alert.severity.upper(), event=alert.event,
                 resource=alert.resource, customer=alert.customer, severity=severity, text=text, log=message_log,
-                reply=reply
+                reply=reply, services_as_text=self._services_as_text(alert)
             )
 
             # send message
