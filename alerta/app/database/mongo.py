@@ -228,7 +228,7 @@ class Database(object):
             )
         return alerts
 
-    def get_history(self, query=None, fields=None, limit=0):
+    def get_history(self, query=None, fields=None, limit=0, reverse=False):
 
         if not fields:
             fields = {
@@ -249,8 +249,8 @@ class Database(object):
             {'$match': query},
             {'$unwind': '$history'},
             {'$project': fields},
+            {'$sort': {'history.updateTime': 1 if not reverse else -1}},
             {'$limit': limit},
-            {'$sort': {'history.updateTime': 1}}
         ]
 
         responses = self.db.alerts.aggregate(pipeline)
