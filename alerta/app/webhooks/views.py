@@ -16,7 +16,7 @@ from flask_cors import cross_origin
 from alerta.app import app, db
 from alerta.app.auth import permission
 from alerta.app.metrics import Timer
-from alerta.app.utils import absolute_url, process_alert, add_remote_ip
+from alerta.app.utils import absolute_url, process_alert, add_remote_ip, process_status
 from alerta.app.alert import Alert
 from alerta.app.exceptions import RejectException
 from alerta.app.webhooks.parsers import TelegramParser, SlackParser
@@ -735,22 +735,31 @@ def grafana():
 def telegram():
     data = request.json
     parser = TelegramParser(logger=LOG)
-    if parser.valid_data(data):
-        alert, user, action = parser.parser_telegram(data)
-        if action in ['open', 'ack', 'close']:
-            db.set_status(alert, action, 'status change via Telegram')
-        elif action == 'watch':
-            db.tag_alert(alert, [u"{}:{}".format(action, user), ])
-            if db.get_users({'name': user}):
-                LOG.info("Not found user {} for {} on {}".format(user, action, alert))
-        elif action == 'blackout':
-            environment, resource, event = alert.split('|', 2)
-            db.create_blackout(environment, resource=resource, event=event)
+    hook_started = webhook_timer.start_timer()
 
-        parser.send_message_reply(alert, action, user, data)
-        return jsonify(status="ok")
-    else:
-        return jsonify(status="error", message="no callback_query in Telegram message"), 400
+    if not parser.valid_data(data):
+        webhook_timer.stop_timer(hook_started)
+        return jsonify(status="error", message=u"no callback_query in Telegram message"), 400
+
+    alert, user, action = parser.parser_telegram(data)
+    if action in ['open', 'ack', 'close']:
+        try:
+            instance = db.get_alert(id=alert)
+            process_status(instance, action, u"status changed via Telegram by {}".format(user))
+        except Exception as e:
+            webhook_timer.stop_timer(hook_started)
+            return jsonify(status="error", message=str(e)), 500
+    elif action == 'watch':
+        db.tag_alert(alert, [u"{}:{}".format(action, user), ])
+        if db.get_users({'name': user}):
+            LOG.info(u"User not found", extra={'user': user, 'action': action, 'alert': alert})
+    elif action == 'blackout':
+        environment, resource, event = alert.split('|', 2)
+        db.create_blackout(environment, resource=resource, event=event)
+
+    parser.send_message_reply(alert, action, user, data)
+    webhook_timer.stop_timer(hook_started)
+    return jsonify(status="ok")
 
 
 def parse_riemann(alert):
@@ -823,14 +832,10 @@ def slack():
 
     if action in ['open', 'ack', 'close']:
         try:
-            alert = db.set_status(alert.id, action, u"status change via Slack by {}".format(user))
-        except RejectException as e:
-            webhook_timer.stop_timer(hook_started)
-            return jsonify(status="error", message=str(e)), 403
+            process_status(alert, action, u"status changed via Slack by {}".format(user))
         except Exception as e:
             webhook_timer.stop_timer(hook_started)
             return jsonify(status="error", message=str(e)), 500
-
     elif action == 'watch':
         db.tag_alert(alert.id, ["{}:{}".format(action, user), ])
 
@@ -839,6 +844,5 @@ def slack():
         return jsonify(status="error", message=u'Unsuported action'), 403
 
     response = parser.build_slack_response(alert, action, user, request.form)
-
     webhook_timer.stop_timer(hook_started)
     return jsonify(**response), 201
