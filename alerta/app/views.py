@@ -289,6 +289,46 @@ def set_status(id):
         return jsonify(status="error", message="not found"), 404
 
 
+@app.route('/alert/status', methods=['OPTIONS', 'PUT'])
+@cross_origin()
+@permission('write:alerts')
+@jsonp
+def set_alert_status():
+    status_started = status_timer.start_timer()
+    required_params = ('resource', 'event', 'environment', 'status')
+    customer = g.get('customer', None)
+
+    process_state = request.json.pop('process_status', False)
+    if not all([key in request.json and request.json[key] for key in required_params]):
+        return jsonify(status="error", message="must supply {} as parameter".format(', '.join(required_params))), 400
+
+    if customer:
+        request.json['customer'] = customer
+
+    status = request.json.pop('status', None)
+    text = request.json.pop('text', None) or u"state updated by {}".format(g.user)
+
+    try:
+        alert = db.get_alerts(query=request.json, limit=1)[0]
+        if process_state:
+            alert, status, text = process_status(alert, status, text)
+        success = db.set_status(alert.id, status, text)
+        if not success:
+            raise ValueError("not found")
+    except IndexError as e:
+        status_timer.stop_timer(status_started)
+        return jsonify(status="error", message="not found", total=0, alert=None), 404
+    except RejectException as e:
+        status_timer.stop_timer(status_started)
+        return jsonify(status="error", message=str(e)), 403
+    except Exception as e:
+        status_timer.stop_timer(status_started)
+        return jsonify(status="error", message=str(e)), 500
+
+    status_timer.stop_timer(status_started)
+    return jsonify(status="ok")
+
+
 @app.route('/alert/<id>/tag', methods=['OPTIONS', 'PUT', 'POST'])  # POST is deprecated
 @cross_origin()
 @permission('write:alerts')
