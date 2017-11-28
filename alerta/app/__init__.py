@@ -87,6 +87,8 @@ if app.debug:
     for logger in loggers:
         logger.setLevel(logging.DEBUG)
 
+LOG_FORMAT = app.config.get('LOG_FORMAT', LOG_FORMAT)
+
 if app.config['LOG_FILE']:
     from logging.handlers import RotatingFileHandler
     del app.logger.handlers[:]
