@@ -1,4 +1,5 @@
 import json
+import os
 import re
 
 from alerta.app import app, db
@@ -235,6 +236,10 @@ class TelegramParser(ConfigParser):
 
             token = customer_config.get('TELEGRAM_TOKEN')
             dashboard_url = config.get('DASHBOARD_URL')
+            base_url = config.get('BASE_URL', '#')
+
+            if not dashboard_url.endswith(base_url):
+                dashboard_url = os.path.join(dashboard_url, base_url)
 
             chat_id = self._chat_id(data)
             if not (token and dashboard_url and chat_id):
@@ -258,7 +263,7 @@ class TelegramParser(ConfigParser):
 
             # format message response
             text = alert.text.replace('_', '\_')
-            alert_url = "{}/#/alert/{}".format(dashboard_url, alert.id)
+            alert_url = os.path.join(dashboard_url, 'alert', alert.id)
             reply = self._reply_message(action, alert_short_id, user, customer_config)
             severity = u"{} \u2192 {}".format(alert.previous_severity or 'indeterminate', alert.severity)
             message = message_format.format(
